@@ -15,17 +15,14 @@ jobs:
           - os: ubuntu-latest
             binsuffix: linux
             file: target/release/bepinex-installer
-            args: --best --lzma
             strip: true
           - os: windows-latest
             binsuffix: windows
             file: target/release/bepinex-installer.exe
-            args: --best --lzma
             strip: true
           - os: macos-latest
             binsuffix: macos
             file: target/release/bepinex-installer
-            args: --best --lzma
             strip: true
 
     steps:

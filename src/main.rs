@@ -1,211 +1,111 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod error;
-mod installer;
+pub mod bepinex;
+pub mod installer;
 
-use std::{fs, io::Cursor, path::PathBuf, str::FromStr};
+use bepinex::BepInEx;
+use eframe::{run_native, NativeOptions};
+use installer::Game;
+use std::{
+    error,
+    path::{Path, PathBuf},
+};
+use steamlocate::SteamDir;
 
-use eframe::run_native;
-use egui::{CentralPanel, Style, Vec2};
-use error::Error;
-use installer::{ArtifactDetails, GameType, Installer, Repo, RepoArtifact};
-use regex::Regex;
-use reqwest::StatusCode;
-use rfd::FileDialog;
-use zip::ZipArchive;
+use crate::installer::Installer;
 
-const BEPINEX_ARTIFACTS_URL: &str =
-    "https://builds.bepinex.dev/api/projects/bepinex_be/artifacts/latest";
+const OLDEST_SUPPORTED_STABLE: &str = "v5.4.11";
+const OLDEST_SUPPORTED_BE: u16 = 510;
 
-const BASE_BEPINEX_URL: &str = "https://builds.bepinex.dev/projects/bepinex_be";
+#[tokio::main]
+async fn main() {
+    let octocrab = octocrab::instance();
 
-fn main() -> Result<(), Error> {
-    let mut installer = Installer::default();
-    let repo = get_repo();
-    match repo {
-        Ok(repo) => {
-            installer.artifacts = repo
-                .artifacts
-                .iter()
-                .filter_map(get_artifact_details)
-                .collect();
-        }
-        Err(e) => installer.error = Some(e),
+    let _stable_releases = BepInEx::get_stable_releases(octocrab).await.unwrap();
+
+    let games = get_unity_games();
+    if games.is_err() {
+        return;
     }
+    let games = games.unwrap();
+
+    let options = NativeOptions {
+        follow_system_theme: true,
+        transparent: false,
+        resizable: false,
+        initial_window_size: Some(eframe::egui::vec2(400.0, 450.0)),
+        ..NativeOptions::default()
+    };
+
+    let bepinex = BepInEx {
+        releases: _stable_releases,
+    };
+    let installer = Installer {
+        bepinex,
+        games,
+        ..Installer::default()
+    };
 
     run_native(
         "BepInEx Installer",
-        eframe::NativeOptions {
-            initial_window_size: Some(Vec2::new(900., 400.)),
-            ..Default::default()
-        },
-        Box::new(|cc| {
-            cc.egui_ctx.set_style(Style::default());
-            Box::new(installer)
-        }),
+        options,
+        Box::new(|_cc| Box::new(installer)),
     )
 }
 
-impl eframe::App for Installer {
-    fn update(&mut self, ctx: &eframe::egui::Context, frame: &mut eframe::Frame) {
-        CentralPanel::default().show(ctx, |ui| {
-            if self.error.is_some() {
-                egui::Window::new("Error occurred").show(ctx, |ui| {
-                    if ui.button("Quit").clicked() {
-                        frame.quit();
-                    }
-                });
-                ui.set_enabled(false);
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Select game").clicked() {
-                    if let Some(path) = pick_file() {
-                        self.game_folder = Some(path.parent().unwrap().to_path_buf());
-                        self.game_type = get_game_type(self.game_folder.as_ref().unwrap())
-                    }
-                }
-                if let Some(game_folder) = &self.game_folder {
-                    ui.monospace(game_folder.to_str().unwrap().to_string());
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Game type: ");
-                if self.game_type.is_none() {
-                    ui.monospace("Failed to identify game type");
-                } else {
-                    ui.monospace(&self.game_type.as_ref().unwrap().to_string())
-                        .on_hover_text(&self.game_type.as_ref().unwrap().hint());
-                }
-            });
-            if self.game_type.is_some() && ui.button("Install").clicked() {
-                let install = install(
-                    self.game_type,
-                    self.artifacts.clone(),
-                    self.game_folder.clone(),
-                );
-                match install {
-                    Ok(_) => self.installed = true,
-                    Err(e) => {
-                        println!("{:?}", e);
-                        self.error = Some(e)
-                    }
-                }
-            }
-            if self.installed {
-                egui::Window::new("Tada 🎉").show(ctx, |ui| {
-                    ui.label("BepInEx has been successfully installed!");
-                    if ui.button("quit").clicked() {
-                        frame.quit();
-                    }
-                });
-            }
-        });
-    }
-}
+fn get_unity_games() -> Result<Vec<Game>, Box<dyn error::Error>> {
+    let mut unity_games: Vec<Game> = Vec::new();
 
-fn pick_file() -> Option<PathBuf> {
-    FileDialog::new()
-        .add_filter("Game executable", &["exe"])
-        .pick_file()
-}
+    let mut steamapps = SteamDir::locate().unwrap_or_default();
+    let apps = steamapps.apps();
 
-fn get_repo() -> Result<Repo, Error> {
-    let req = reqwest::blocking::Client::new()
-        .get(BEPINEX_ARTIFACTS_URL)
-        .send()?;
-    if req.status() != StatusCode::OK {
-        return Err(Error::http(req.status()));
-    }
-
-    let req: Repo = req.json()?;
-    Ok(req)
-}
-
-fn get_artifact_details(repo: &RepoArtifact) -> Option<ArtifactDetails> {
-    let regex = Regex::new(r"BepInEx_(NetLauncher|(?:Unity(?:Mono|IL2CPP)))(?:_(x\d+|unix)){0,1}_(?:[a-zA-Z0-9]{7})_((?:[0-9]){1,}\.(?:[0-9]){1,}\.(?:[0-9]){1,})-be\.(\d+)\.zip").unwrap();
-    let captures = regex.captures(&repo.file).unwrap();
-
-    let game_type = captures.get(1)?.as_str().to_string();
-    let arch = captures
-        .get(2)
-        .map(|e| e.as_str())
-        .unwrap_or("x64")
-        .to_string();
-    let version = captures.get(3)?.as_str().to_string();
-    let build_id = captures.get(4)?.as_str().to_string();
-
-    Some(ArtifactDetails {
-        game_type: GameType::from_str(game_type.as_str()).unwrap(),
-        arch,
-        version,
-        file_name: repo.file.to_string(),
-        build_id,
-    })
-}
-
-fn get_game_type(path: &PathBuf) -> Option<GameType> {
-    let mono = "Managed";
-    let il2cpp = "il2cpp_data";
-
-    if let Ok(dir) = fs::read_dir(path) {
-        let data_dir = dir.filter_map(Result::ok).find(|el| {
-            el.file_name().to_str().unwrap().ends_with("_Data") && el.file_type().unwrap().is_dir()
-        });
-
-        let data_dir = data_dir.as_ref()?.path();
-        if data_dir.join(mono).exists() {
-            Some(GameType::UnityMono)
-        } else if data_dir.join(il2cpp).exists() {
-            Some(GameType::UnityIL2CPP)
-        } else {
-            Some(GameType::NetLauncher)
+    apps.iter().for_each(|(_id, app)| {
+        if app.is_none() {
+            return;
         }
-    } else {
-        None
-    }
+        let app = app.as_ref().unwrap();
+        let path = Path::new(&app.path);
+        if path.join("UnityPlayer.dll").exists() {
+            unity_games.push(Game::new(
+                app.name.clone().unwrap_or_default(),
+                "a".to_owned(),
+                app.path.to_owned(),
+            ));
+        }
+    });
+    Ok(unity_games)
 }
 
-fn get_download_url(artifact: &ArtifactDetails) -> String {
-    format!(
-        "{}/{}/{}",
-        BASE_BEPINEX_URL, artifact.build_id, artifact.file_name
-    )
+fn get_dll_version(path: PathBuf) -> Result<String, Box<dyn error::Error>> {
+    let file = pelite::FileMap::open(path.as_path())?;
+    let img = pelite::PeFile::from_bytes(file.as_ref())?;
+    let resources = img.resources()?;
+    let version_info = resources.version_info()?;
+    let lang = version_info
+        .translation()
+        .get(0)
+        .ok_or("Failed to get lang")?;
+    let strings = version_info.file_info().strings;
+    let string = strings
+        .get(lang)
+        .ok_or("Failed to get strings for that lang")?;
+    let version = string
+        .get("ProductVersion")
+        .ok_or("Failed to get prod. version")?;
+
+    Ok(version.to_owned())
 }
 
-fn install(
-    game_type: Option<GameType>,
-    artifacts: Vec<ArtifactDetails>,
-    path: Option<PathBuf>,
-) -> Result<(), Error> {
-    if game_type.is_none() || path.is_none() {
-        return Err(Error::invalid_game_type());
+fn get_installed_bepinex_version(game: &Game) -> Option<String> {
+    let core_path = game.path.join("BepInEx").join("core");
+    if !core_path.exists() {
+        return None;
     }
 
-    let game_type = game_type.unwrap();
-    let path = path.unwrap();
-
-    let artifact = artifacts
-        .iter()
-        .find(|artifact| artifact.game_type == game_type && artifact.arch == "x64");
-
-    if artifact.is_none() {
-        return Err(Error::invalid_game_type());
+    if core_path.join("BepInEx.Core.dll").exists() {
+        return get_dll_version(core_path.join("BepInEx.Core.dll")).ok();
+    } else if core_path.join("BepInEx.dll").exists() {
+        return get_dll_version(core_path.join("BepInEx.dll")).ok();
     }
-    let artifact = artifact.unwrap();
-    let url = get_download_url(artifact);
-
-    let resp = reqwest::blocking::Client::new().get(url).send()?;
-
-    if resp.status() != StatusCode::OK {
-        return Err(Error::http(resp.status()));
-    }
-
-    let bytes = resp.bytes()?;
-    let zip = ZipArchive::new(Cursor::new(bytes.to_vec()))
-        .unwrap()
-        .extract(path);
-    if zip.is_err() {
-        return Err(Error::zip_error(zip.err().unwrap()));
-    }
-    Ok(())
+    None
 }
