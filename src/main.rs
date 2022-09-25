@@ -4,7 +4,7 @@ pub mod bepinex;
 pub mod installer;
 
 use bepinex::BepInEx;
-use eframe::{run_native, NativeOptions};
+use eframe::{run_native, NativeOptions, egui};
 use installer::Game;
 use std::{
     error,
@@ -32,8 +32,9 @@ async fn main() {
     let options = NativeOptions {
         follow_system_theme: true,
         transparent: false,
-        resizable: false,
-        initial_window_size: Some(eframe::egui::vec2(300.0, 450.0)),
+        resizable: true,
+        initial_window_size: Some(eframe::egui::vec2(500.0, 600.0)),
+        min_window_size: Some(eframe::egui::vec2(400.0, 300.0)),
         ..NativeOptions::default()
     };
 
@@ -49,7 +50,15 @@ async fn main() {
     run_native(
         "BepInEx Installer",
         options,
-        Box::new(|_cc| Box::new(installer)),
+        Box::new(|cc| { 
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.iter_mut().for_each(|font| {
+                font.1.tweak.scale = 2.0;
+            });
+            cc.egui_ctx.set_fonts(fonts);
+            
+            Box::new(installer) 
+        }),
     )
 }
 

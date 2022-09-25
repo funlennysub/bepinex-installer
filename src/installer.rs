@@ -2,7 +2,6 @@ use std::{fmt::Display, path::PathBuf};
 
 use eframe::{
     egui::{CentralPanel, ComboBox, Ui},
-    epaint::{vec2, Vec2},
     App,
 };
 
@@ -105,15 +104,19 @@ impl App for Installer {
                     get_installed_bepinex_version(self.selected_game.as_ref().unwrap());
                 println!("{:#?}", installed_bix)
             }
-
+            ui.add_space(10.0);
             let prev_bix = self.selected_bix.clone();
             self.show_bix_select(ui);
             if prev_bix != self.selected_bix {
                 println!("bix changed");
             }
 
-            ui.allocate_space(vec2(ui.available_width(), ui.available_height() - 50.0));
+            ui.add_space(10.0);
+            ui.label("Installed BepInEx: ");
+            ui.label("Game type: ");
+            ui.label("Game arch: ");
 
+            ui.add_space(ui.available_height() - 50.0);
             ui.centered_and_justified(|ui| {
                 if ui.button("Install").clicked() {
                     println!("{:?}", self.selected_game);
