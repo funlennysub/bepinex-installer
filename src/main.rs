@@ -33,7 +33,7 @@ async fn main() {
         follow_system_theme: true,
         transparent: false,
         resizable: false,
-        initial_window_size: Some(eframe::egui::vec2(400.0, 450.0)),
+        initial_window_size: Some(eframe::egui::vec2(300.0, 450.0)),
         ..NativeOptions::default()
     };
 
